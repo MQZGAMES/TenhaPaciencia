@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="theme-color" content="#0b3a26">
+<meta name="description" content="TenhaPaciência: o clássico jogo de cartas Paciência (Klondike), bonito, rápido e feito para o celular.">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Paciência">
+<title>TenhaPaciência</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,700;0,900;1,700&family=Inter:wght@500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body data-felt="green" data-back="ruby">
+<div id="app">
+  <header class="topbar">
+    <div class="brand">
+      <svg class="brand-mark" viewBox="0 0 100 100" aria-hidden="true"><use href="#suit-0"/></svg>
+      <span>Tenha<em>Paciência</em></span>
+    </div>
+    <div class="stats">
+      <div class="stat"><span class="lbl">Pontos</span><span class="val" id="score">0</span></div>
+      <div class="stat"><span class="lbl">Jogadas</span><span class="val" id="moves">0</span></div>
+      <div class="stat"><span class="lbl">Tempo</span><span class="val" id="time">0:00</span></div>
+    </div>
+  </header>
+
+  <main id="board" aria-label="Mesa de jogo"></main>
+
+  <nav class="toolbar">
+    <button id="btn-new" type="button">
+      <svg viewBox="0 0 24 24"><path d="M4 4v6h6M20 20v-6h-6"/><path d="M20 10a8 8 0 0 0-14.3-3.3L4 10m16 4-1.7 3.3A8 8 0 0 1 4 14"/></svg>
+      <span>Novo</span>
+    </button>
+    <button id="btn-undo" type="button">
+      <svg viewBox="0 0 24 24"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg>
+      <span>Desfazer</span>
+    </button>
+    <button id="btn-auto" type="button" class="accent" hidden>
+      <svg viewBox="0 0 24 24"><path d="m13 2-9 12h8l-1 8 9-12h-8z"/></svg>
+      <span>Finalizar</span>
+    </button>
+    <button id="btn-hint" type="button">
+      <svg viewBox="0 0 24 24"><path d="M9 18h6M10 22h4"/><path d="M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg>
+      <span>Dica</span>
+    </button>
+    <button id="btn-menu" type="button">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+      <span>Opções</span>
+    </button>
+  </nav>
+</div>
+
+<canvas id="fx" aria-hidden="true"></canvas>
+<div id="toast" role="status" aria-live="polite"></div>
+
+<!-- Confirmar novo jogo -->
+<div class="modal" id="modal-new" hidden>
+  <div class="sheet">
+    <h2>Novo jogo?</h2>
+    <p>O jogo atual será abandonado.</p>
+    <div class="row">
+      <button class="btn ghost" data-close type="button">Cancelar</button>
+      <button class="btn primary" id="confirm-new" type="button">Distribuir</button>
+    </div>
+  </div>
+</div>
+
+<!-- Opções -->
+<div class="modal" id="modal-menu" hidden>
+  <div class="sheet">
+    <h2>Opções</h2>
+
+    <div class="field">
+      <span class="field-lbl">Modo</span>
+      <div class="seg" id="opt-draw">
+        <button type="button" data-v="1">Virar 1</button>
+        <button type="button" data-v="3">Virar 3</button>
+      </div>
+    </div>
+
+    <div class="field">
+      <span class="field-lbl">Mesa</span>
+      <div class="swatches" id="opt-felt">
+        <button type="button" data-v="green" style="--sw:#1f7a4d" aria-label="Verde"></button>
+        <button type="button" data-v="blue" style="--sw:#1c5f8f" aria-label="Azul"></button>
+        <button type="button" data-v="wine" style="--sw:#7e1f36" aria-label="Vinho"></button>
+        <button type="button" data-v="slate" style="--sw:#33384a" aria-label="Grafite"></button>
+      </div>
+    </div>
+
+    <div class="field">
+      <span class="field-lbl">Verso</span>
+      <div class="swatches" id="opt-back">
+        <button type="button" data-v="ruby" style="--sw:#b3203a" aria-label="Rubi"></button>
+        <button type="button" data-v="sapphire" style="--sw:#1f4fa8" aria-label="Safira"></button>
+        <button type="button" data-v="onyx" style="--sw:#20222b" aria-label="Ônix"></button>
+        <button type="button" data-v="emerald" style="--sw:#13734f" aria-label="Esmeralda"></button>
+      </div>
+    </div>
+
+    <div class="field">
+      <span class="field-lbl">Som</span>
+      <div class="seg" id="opt-sound">
+        <button type="button" data-v="1">Ligado</button>
+        <button type="button" data-v="0">Desligado</button>
+      </div>
+    </div>
+
+    <div class="statsbox" id="statsbox"></div>
+
+    <div class="row">
+      <button class="btn ghost" id="btn-reset-stats" type="button">Zerar estatísticas</button>
+      <button class="btn primary" data-close type="button">Pronto</button>
+    </div>
+  </div>
+</div>
+
+<!-- Vitória -->
+<div class="modal" id="modal-win" hidden>
+  <div class="sheet win">
+    <div class="trophy">
+      <svg viewBox="0 0 100 100"><use href="#suit-1"/></svg>
+    </div>
+    <h2>Você venceu!</h2>
+    <p class="sub">Paciência é uma virtude.</p>
+    <div class="winstats" id="winstats"></div>
+    <div class="row">
+      <button class="btn primary wide" id="win-new" type="button">Jogar de novo</button>
+    </div>
+  </div>
+</div>
+
+<script src="js/game.js"></script>
+</body>
+</html>
