@@ -146,6 +146,9 @@ body::before {
   width: 100%;
   touch-action: none;
   overflow: hidden;
+  /* Contexto de empilhamento próprio: o z-index das cartas nunca passa por cima de modais e avisos. */
+  z-index: 1;
+  isolation: isolate;
 }
 
 .slot {
@@ -336,21 +339,32 @@ body::before {
     0 4px 8px rgba(0,0,0,.2);
 }
 
-.card.hint .face {
-  box-shadow: 0 0 0 2.5px var(--gold), 0 0 16px 2px rgba(241,199,91,.85);
-  animation: pulse .55s ease-in-out 3 alternate;
+/* Brilho de dica / destino: fica num pseudo-elemento da carta, sem tocar no transform
+   (que posiciona a carta) nem nas faces (que fazem a virada 3D). */
+.card::after {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: calc(var(--cw) * .1);
+  pointer-events: none;
+  opacity: 0;
+  box-shadow: 0 0 0 2.5px var(--gold), 0 0 18px 3px rgba(241,199,91,.8);
+  background: rgba(255, 224, 138, .14);
+  transition: opacity .15s;
 }
-.slot.hint {
-  border-color: var(--gold);
-  box-shadow: 0 0 0 2px var(--gold), 0 0 16px rgba(241,199,91,.8);
-  animation: pulse .55s ease-in-out 3 alternate;
+.card.tgt::after { opacity: 1; }
+.card.hint::after { animation: glowPulse .5s ease-in-out 4 alternate both; }
+.slot.hint { animation: slotPulse .5s ease-in-out 4 alternate both; }
+@keyframes glowPulse { from { opacity: .25; } to { opacity: 1; } }
+@keyframes slotPulse {
+  from { border-color: rgba(241,199,91,.3); box-shadow: inset 0 2px 8px rgba(0,0,0,.25); }
+  to { border-color: var(--gold); box-shadow: 0 0 0 2px var(--gold), 0 0 18px rgba(241,199,91,.8); }
 }
-@keyframes pulse { to { filter: brightness(1.12); transform: translateY(-1px); } }
 
 .card.shake .inner { animation: shake .32s ease; }
 @keyframes shake {
-  20% { transform: translateX(-4px); }
-  45% { transform: translateX(4px); }
+  20% { transform: translateX(-4px) rotate(-2deg); }
+  45% { transform: translateX(4px) rotate(2deg); }
   70% { transform: translateX(-2px); }
 }
 

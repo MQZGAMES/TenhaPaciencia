@@ -185,8 +185,9 @@
     }
     S.moves++;
     render();
-    sfx.place();
-    if (flipped) setTimeout(sfx.flip, 120);
+    if (to[0] === 'f') sfx.found(rankOf(ids[0]));
+    else sfx.place();
+    if (flipped) setTimeout(sfx.flip, 150);
     if (to[0] === 'f') sparkle(to);
     save();
     checkWin();
@@ -196,7 +197,8 @@
     if (!S.stock.length && !S.waste.length) return;
     pushHistory();
     startClock();
-    if (!S.stock.length) {
+    const recycling = !S.stock.length;
+    if (recycling) {
       S.stock = S.waste.reverse();
       S.waste = [];
       S.stock.forEach(id => { S.up[id] = false; });
@@ -213,7 +215,7 @@
     }
     S.moves++;
     render();
-    sfx.flip();
+    recycling ? sfx.recycle() : sfx.slide();
     save();
   }
 
@@ -222,7 +224,7 @@
     Object.assign(S, JSON.parse(history.pop()));
     S.won = false;
     render();
-    sfx.flip();
+    sfx.slide();
     save();
   }
 
@@ -293,6 +295,7 @@
     if (busy || S.won) return;
     const m = findMoves()[0];
     clearHints();
+    void board.offsetWidth; // reinicia a animação se a dica for pedida de novo
     if (m) {
       const ids = pile(m.ref).slice(m.index);
       ids.forEach(id => els[id].classList.add('hint'));
@@ -461,7 +464,7 @@
       drag.target = t;
       if (t) {
         const dest = pile(t);
-        if (dest.length) els[dest[dest.length - 1]].classList.add('hint');
+        if (dest.length) els[dest[dest.length - 1]].classList.add('tgt');
         else slots[t].classList.add('target');
       }
     }
@@ -469,7 +472,7 @@
 
   function clearTargets() {
     document.querySelectorAll('.slot.target').forEach(s => s.classList.remove('target'));
-    document.querySelectorAll('.card.hint').forEach(s => s.classList.remove('hint'));
+    document.querySelectorAll('.card.tgt').forEach(s => s.classList.remove('tgt'));
   }
 
   function dropTarget(dx, dy) {
@@ -519,8 +522,22 @@
     closeModals();
     clearHints();
     fx.getContext('2d').clearRect(0, 0, fx.width, fx.height);
-    deal();
+    // Embaralha (som) e recolhe as cartas antes de distribuir.
+    busy = true;
+    sfx.shuffle();
+    gather();
+    setTimeout(deal, 650);
     save();
+  }
+
+  // Junta todas as cartas no monte, viradas para baixo, com animação.
+  function gather() {
+    els.forEach((el, i) => {
+      el.style.transform = `translate3d(${M.colX[0]}px,${M.topY}px,0)`;
+      el.classList.add('down');
+      el.style.zIndex = 600 + i;
+      el.style.visibility = '';
+    });
   }
 
   function deal() {
@@ -752,51 +769,154 @@
   }
 
   // ---------- Som (sintetizado) ----------
-  let ac = null;
+  // Sons de papel feitos com ruído filtrado: um buffer de ruído é gerado uma vez e tocado em
+  // trechos aleatórios, com variação de volume e timbre para nenhuma carta soar igual à outra.
+  let ac = null, master = null, noiseBuf = null;
   function actx() {
     if (!settings.sound) return null;
-    if (!ac) { try { ac = new (window.AudioContext || window.webkitAudioContext)(); } catch { return null; } }
+    if (!ac) {
+      try { ac = new (window.AudioContext || window.webkitAudioContext)(); } catch { return null; }
+      const comp = ac.createDynamicsCompressor();
+      comp.threshold.value = -18;
+      comp.ratio.value = 4;
+      master = ac.createGain();
+      master.gain.value = 0.8;
+      master.connect(comp).connect(ac.destination);
+      // Ruído rosa (mais "papel" e menos chiado que o branco).
+      const len = ac.sampleRate * 2;
+      noiseBuf = ac.createBuffer(1, len, ac.sampleRate);
+      const d = noiseBuf.getChannelData(0);
+      let b0 = 0, b1 = 0, b2 = 0;
+      for (let i = 0; i < len; i++) {
+        const w = Math.random() * 2 - 1;
+        b0 = 0.997 * b0 + w * 0.029591;
+        b1 = 0.985 * b1 + w * 0.032534;
+        b2 = 0.950 * b2 + w * 0.048056;
+        d[i] = (b0 + b1 + b2 + w * 0.1848) * 1.6;
+      }
+    }
     if (ac.state === 'suspended') ac.resume();
     return ac;
   }
-  function noise(dur, freq, q, gain) {
+  const vary = (v, p = 0.15) => v * (1 + (Math.random() * 2 - 1) * p);
+
+  // Rajada de ruído filtrada. bp+sweep faz o "swish" de carta deslizando.
+  function burst({ dur, attack = 0.002, hp = 0, lp = 0, bp = 0, sweep = 0, q = 1, gain = 0.3, when = 0 }) {
     const a = actx();
     if (!a) return;
-    const len = Math.floor(a.sampleRate * dur);
-    const buf = a.createBuffer(1, len, a.sampleRate);
-    const d = buf.getChannelData(0);
-    for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 4);
+    const t = a.currentTime + when;
     const src = a.createBufferSource();
-    src.buffer = buf;
-    const f = a.createBiquadFilter();
-    f.type = 'bandpass';
-    f.frequency.value = freq;
-    f.Q.value = q;
-    const g = a.createGain();
-    g.gain.value = gain;
-    src.connect(f).connect(g).connect(a.destination);
-    src.start();
+    src.buffer = noiseBuf;
+    src.playbackRate.value = vary(1, 0.08);
+    let node = src;
+    const add = (type, f, qq) => {
+      const fl = a.createBiquadFilter();
+      fl.type = type;
+      fl.frequency.setValueAtTime(f, t);
+      if (qq) fl.Q.value = qq;
+      node.connect(fl);
+      node = fl;
+      return fl;
+    };
+    if (hp) add('highpass', hp);
+    if (lp) add('lowpass', lp);
+    if (bp) {
+      const f = add('bandpass', bp, q);
+      if (sweep) f.frequency.exponentialRampToValueAtTime(sweep, t + dur);
+    }
+    const env = a.createGain();
+    env.gain.setValueAtTime(0.0001, t);
+    env.gain.exponentialRampToValueAtTime(gain, t + attack);
+    env.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    node.connect(env).connect(master);
+    src.start(t, Math.random() * 1.5, dur + 0.05);
   }
-  function tone(freq, dur, when = 0, type = 'triangle', gain = 0.12) {
+
+  // Batida grave curta: o corpo da carta encostando no feltro.
+  function thump(freq, dur, gain, when = 0) {
     const a = actx();
     if (!a) return;
-    const t0 = a.currentTime + when;
+    const t = a.currentTime + when;
     const o = a.createOscillator(), g = a.createGain();
-    o.type = type;
-    o.frequency.value = freq;
-    g.gain.setValueAtTime(0.0001, t0);
-    g.gain.exponentialRampToValueAtTime(gain, t0 + 0.015);
-    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
-    o.connect(g).connect(a.destination);
-    o.start(t0);
-    o.stop(t0 + dur + 0.05);
+    o.type = 'sine';
+    o.frequency.setValueAtTime(freq, t);
+    o.frequency.exponentialRampToValueAtTime(freq * 0.55, t + dur);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(gain, t + 0.004);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(g).connect(master);
+    o.start(t);
+    o.stop(t + dur + 0.02);
   }
+
+  // Sino suave (fundamental + parcial inarmônico), usado nas fundações e na vitória.
+  function bell(freq, when = 0, gain = 0.06, dur = 0.9) {
+    const a = actx();
+    if (!a) return;
+    const t = a.currentTime + when;
+    [[1, 1], [2.76, 0.35], [5.4, 0.12]].forEach(([m, k]) => {
+      const o = a.createOscillator(), g = a.createGain();
+      o.type = 'sine';
+      o.frequency.value = freq * m;
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(gain * k, t + 0.006);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + dur / m ** 0.3);
+      o.connect(g).connect(master);
+      o.start(t);
+      o.stop(t + dur + 0.05);
+    });
+  }
+
+  // Escala pentatônica: cada carta que sobe para a fundação toca uma nota mais aguda.
+  const PENTA = [0, 2, 4, 7, 9];
+  const noteFor = r => 440 * 2 ** ((PENTA[(r - 1) % 5] + 12 * Math.floor((r - 1) / 5) + 3) / 12);
+
   const sfx = {
-    place: () => noise(0.08, 1500, 0.9, 1.1),
-    flip: () => noise(0.06, 3200, 1.1, 0.7),
-    deal: () => noise(0.05, 2400, 1, 0.45),
-    nope: () => tone(160, 0.14, 0, 'sine', 0.12),
-    win: () => [523, 659, 784, 1047, 1319].forEach((f, i) => tone(f, 0.5, i * 0.11, 'triangle', 0.1)),
+    // Carta solta sobre a mesa: estalo + corpo grave + pequena cauda.
+    place() {
+      burst({ dur: vary(0.035), hp: 1100, lp: 7000, gain: vary(0.55) });
+      thump(vary(170, 0.1), 0.07, vary(0.32));
+      burst({ dur: vary(0.09), bp: 1800, q: 0.7, gain: 0.1, when: 0.008 });
+    },
+    // Virar uma carta: dois estalos rápidos do papel.
+    flip() {
+      burst({ dur: 0.028, hp: 1800, lp: 8000, gain: vary(0.32) });
+      burst({ dur: 0.04, hp: 1300, lp: 6000, gain: vary(0.24), when: vary(0.045, 0.2) });
+    },
+    // Puxar do monte: swish curto que termina num toque.
+    slide() {
+      const d = vary(0.11, 0.2);
+      burst({ dur: d, attack: d * 0.45, bp: vary(1300), sweep: vary(3600), q: 0.8, gain: vary(0.3) });
+      burst({ dur: 0.03, hp: 1500, lp: 7000, gain: vary(0.3), when: d * 0.85 });
+    },
+    // Distribuir: swish leve.
+    deal() {
+      burst({ dur: vary(0.08, 0.2), attack: 0.02, bp: vary(1800), sweep: vary(4200), q: 0.9, gain: vary(0.2) });
+      thump(vary(200, 0.1), 0.04, 0.12, 0.06);
+    },
+    // Reciclar o monte: um swish mais longo, do maço todo.
+    recycle() {
+      burst({ dur: 0.32, attack: 0.12, bp: 700, sweep: 2600, q: 0.6, gain: 0.32 });
+      thump(140, 0.09, 0.3, 0.3);
+    },
+    // Embaralhar: riffle de várias cartas batendo em sequência.
+    shuffle() {
+      for (let i = 0; i < 26; i++) {
+        burst({ dur: 0.02, hp: 1600, lp: 7000, gain: vary(0.18, 0.4), when: i * vary(0.016, 0.3) + (i > 12 ? 0.09 : 0) });
+      }
+      thump(150, 0.1, 0.25, 0.55);
+    },
+    found(r) {
+      sfx.place();
+      bell(noteFor(r), 0.03, 0.05);
+    },
+    nope() {
+      thump(120, 0.13, 0.35);
+      burst({ dur: 0.05, lp: 900, gain: 0.15 });
+    },
+    win() {
+      [0, 4, 7, 12, 16, 19, 24].forEach((st, i) => bell(523.25 * 2 ** (st / 12), i * 0.09, 0.07, 1.4));
+    },
   };
 
   // ---------- Modais e opções ----------
@@ -863,7 +983,7 @@
     settings.sound = b.dataset.v === '1';
     saveSettings();
     applyLook();
-    sfx.flip();
+    sfx.place();
   });
   $('#btn-reset-stats').addEventListener('click', () => {
     Object.assign(stats, { played: 0, won: 0, streak: 0, bestStreak: 0, bestTime: 0, bestScore: 0 });
