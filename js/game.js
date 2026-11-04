@@ -24,7 +24,7 @@
     set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* sem armazenamento */ } },
   };
 
-  const settings = Object.assign({ draw: 1, sound: true, felt: 'green', back: 'ruby' }, store.get('tp_settings', {}));
+  const settings = Object.assign({ draw: 1, diff: 'normal', sound: true, felt: 'green', back: 'ruby' }, store.get('tp_settings', {}));
   const stats = Object.assign({ played: 0, won: 0, streak: 0, bestStreak: 0, bestTime: 0, bestScore: 0 }, store.get('tp_stats', {}));
   const saveSettings = () => store.set('tp_settings', settings);
   const saveStats = () => store.set('tp_stats', stats);
@@ -75,6 +75,10 @@
   mkSlot('waste', 'waste', '');
   for (let f = 0; f < 4; f++) mkSlot('f' + f, 'found', use('suit-' + f, ''));
   for (let t = 0; t < 7; t++) mkSlot('t' + t, 'tab', '<span class="slot-txt">K</span>');
+  const passBadge = document.createElement('div');
+  passBadge.className = 'pass-badge';
+  passBadge.hidden = true;
+  board.appendChild(passBadge);
 
   // ---------- Estado ----------
   let S = null;          // estado do jogo
@@ -91,19 +95,95 @@
     return a;
   }
 
-  function freshState() {
-    const deck = shuffle([...Array(52).keys()]);
+  // Monta o jogo a partir de um baralho (já verificado pelo solucionador como vencível).
+  function freshState(deck) {
+    const { tab, stock } = Solver.dealFromDeck(deck);
     const st = {
-      stock: [], waste: [], found: [[], [], [], []], tab: [[], [], [], [], [], [], []],
-      up: Array(52).fill(false), draw: settings.draw, fan: 0,
+      stock, waste: [], found: [[], [], [], []], tab,
+      up: Array(52).fill(false), draw: settings.draw, diff: settings.diff, fan: 0, passes: 0,
       moves: 0, score: 0, time: 0, started: false, counted: false, won: false,
     };
-    for (let c = 0; c < 7; c++) {
-      for (let k = 0; k <= c; k++) st.tab[c].push(deck.pop());
-      st.up[st.tab[c][c]] = true;
-    }
-    st.stock = deck;
+    tab.forEach(c => { st.up[c[c.length - 1]] = true; });
     return st;
+  }
+
+  // ---------- Jogos vencíveis e solucionador (Web Worker) ----------
+  const DIFF_NAMES = { easy: 'Fácil', normal: 'Normal', hard: 'Difícil' };
+  const SUIT_NAMES = ['espadas', 'copas', 'ouros', 'paus'];
+  const RANK_NAMES = ['', 'Ás', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'Valete', 'Dama', 'Rei'];
+  const cardName = id => `${RANK_NAMES[rankOf(id)]} de ${SUIT_NAMES[suitOf(id)]}`;
+  const diffCfg = diff => Solver.DIFFICULTY[diff] || Solver.DIFFICULTY.normal;
+  const maxPasses = () => diffCfg(S.diff).maxPasses;
+
+  let worker = null, reqId = 0;
+  const pending = new Map();
+  try {
+    worker = new Worker('js/solver.js');
+    worker.onmessage = e => {
+      const cb = pending.get(e.data.id);
+      if (cb) { pending.delete(e.data.id); cb(e.data); }
+    };
+    worker.onerror = () => {
+      worker = null;
+      pending.forEach(cb => cb(null));
+      pending.clear();
+    };
+  } catch { worker = null; }
+
+  // Reserva sem worker: roda na própria página, com limites menores.
+  function askHere(q) {
+    if (q.type === 'deal') return Solver.makeDeal(q.draw, q.diff, 600);
+    return Solver.solve(q.state, { draw: q.draw, maxPasses: diffCfg(q.diff).maxPasses }, Math.min(q.limit, 30000));
+  }
+  function ask(q) {
+    return new Promise(res => {
+      if (!worker) { setTimeout(() => res(askHere(q)), 0); return; }
+      const id = ++reqId;
+      pending.set(id, r => res(r || askHere(q)));
+      worker.postMessage({ ...q, id });
+    });
+  }
+
+  // O próximo jogo é gerado em segundo plano, para o "Novo" ser instantâneo.
+  const dealKey = () => settings.draw + '-' + settings.diff;
+  let nextDeal = store.get('tp_next', null);
+  let prefetching = null;
+  function prefetch() {
+    const key = dealKey();
+    if (nextDeal && nextDeal.key === key) return Promise.resolve();
+    if (prefetching && prefetching.key === key) return prefetching.p;
+    const p = ask({ type: 'deal', draw: settings.draw, diff: settings.diff }).then(r => {
+      if (r && r.deck && key === dealKey()) {
+        nextDeal = { key, deck: r.deck };
+        store.set('tp_next', nextDeal);
+      }
+      if (prefetching && prefetching.key === key) prefetching = null;
+    });
+    prefetching = { key, p };
+    return p;
+  }
+  async function takeDeal() {
+    for (let i = 0; i < 3; i++) {
+      if (nextDeal && nextDeal.key === dealKey()) {
+        const d = nextDeal.deck;
+        nextDeal = null;
+        store.set('tp_next', null);
+        return d;
+      }
+      await prefetch();
+    }
+    return shuffle([...Array(52).keys()]);
+  }
+
+  // Estado no formato do solucionador.
+  function solverState() {
+    const found = [0, 0, 0, 0];
+    S.found.forEach(p => { if (p.length) found[suitOf(p[0])] = p.length; });
+    return {
+      tab: S.tab.map(c => c.slice()),
+      down: S.tab.map(c => { let n = 0; while (n < c.length && !S.up[c[n]]) n++; return n; }),
+      stock: S.stock.slice(), waste: S.waste.slice(), found, passes: S.passes || 0,
+    };
   }
 
   const pile = ref => ref === 'stock' ? S.stock : ref === 'waste' ? S.waste
@@ -119,7 +199,7 @@
 
   const snapshot = () => JSON.stringify({
     stock: S.stock, waste: S.waste, found: S.found, tab: S.tab, up: S.up,
-    fan: S.fan, moves: S.moves, score: S.score,
+    fan: S.fan, passes: S.passes, moves: S.moves, score: S.score,
   });
   function pushHistory() {
     history.push(snapshot());
@@ -165,6 +245,7 @@
 
   // Move a carta `index` de `from` (e as de cima) para `to`.
   function doMove(from, index, to) {
+    pendingHint = null;
     pushHistory();
     startClock();
     const src = pile(from);
@@ -191,14 +272,22 @@
     if (to[0] === 'f') sparkle(to);
     save();
     checkWin();
+    checkStuck();
   }
 
   function drawStock() {
     if (!S.stock.length && !S.waste.length) return;
+    pendingHint = null;
+    const recycling = !S.stock.length;
+    if (recycling && maxPasses() && S.passes + 1 >= maxPasses()) {
+      sfx.nope();
+      toast('Acabaram as voltas do monte nesta dificuldade');
+      return;
+    }
     pushHistory();
     startClock();
-    const recycling = !S.stock.length;
     if (recycling) {
+      S.passes = (S.passes || 0) + 1;
       S.stock = S.waste.reverse();
       S.waste = [];
       S.stock.forEach(id => { S.up[id] = false; });
@@ -217,10 +306,12 @@
     render();
     recycling ? sfx.recycle() : sfx.slide();
     save();
+    checkStuck();
   }
 
   function undo() {
     if (busy || !history.length) return;
+    pendingHint = null;
     Object.assign(S, JSON.parse(history.pop()));
     S.won = false;
     render();
@@ -291,26 +382,112 @@
     return out.sort((a, b) => b.pri - a.pri);
   }
 
-  function hint() {
-    if (busy || S.won) return;
-    const m = findMoves()[0];
-    clearHints();
-    void board.offsetWidth; // reinicia a animação se a dica for pedida de novo
-    if (m) {
-      const ids = pile(m.ref).slice(m.index);
-      ids.forEach(id => els[id].classList.add('hint'));
-      const dest = pile(m.to);
-      if (dest.length) els[dest[dest.length - 1]].classList.add('hint');
-      else slots[m.to].classList.add('hint');
-    } else if (S.stock.length || S.waste.length) {
-      if (S.stock.length) els[S.stock[S.stock.length - 1]].classList.add('hint');
-      else slots.stock.classList.add('hint');
-      toast('Vire uma carta do monte');
-    } else {
-      toast('Sem jogadas — que tal um novo jogo?');
+  // Cartas do monte que dá para alcançar tocando nele k vezes.
+  const reachable = () => Solver.talon(solverState(), { draw: S.draw, maxPasses: maxPasses() });
+  const playable = c => S.found.some((_, f) => canFound(c, f)) || S.tab.some((_, t) => canTab(c, t));
+
+  // Sem nenhuma jogada (nem puxando o monte): avisa uma vez por situação.
+  let stuckWarned = '';
+  function checkStuck() {
+    if (S.won || findMoves().length || reachable().some(p => playable(p.top))) return;
+    const k = snapshot();
+    if (k === stuckWarned) return;
+    stuckWarned = k;
+    setTimeout(() => toast('Sem jogadas possíveis. Desfaça algumas jogadas ou comece outro jogo.', 3600), 400);
+  }
+
+  function foundSlot(c) {
+    for (let f = 0; f < 4; f++) if (canFound(c, f)) return f;
+    return 0;
+  }
+  const where = to => to[0] === 'f' ? 'para a fundação'
+    : S.tab[+to[1]].length ? `para o ${cardName(S.tab[+to[1]][S.tab[+to[1]].length - 1])}` : 'para a coluna vazia';
+
+  // Destaca a jogada e deixa tocar em Dica de novo para fazê-la.
+  function showMove(from, index, to) {
+    pile(from).slice(index).forEach(id => els[id].classList.add('hint'));
+    const dest = pile(to);
+    if (dest.length) els[dest[dest.length - 1]].classList.add('hint');
+    else slots[to].classList.add('hint');
+    toast(`${cardName(pile(from)[index])} ${where(to)}. Toque em Dica de novo para jogar.`, 3200);
+    pendingHint = { run: () => doMove(from, index, to), until: Date.now() + 5000 };
+  }
+  // A carta certa está no monte: diz quantos toques faltam e qual carta vai sair.
+  function showTalon(k, c, to) {
+    if (S.stock.length) els[S.stock[S.stock.length - 1]].classList.add('hint');
+    else slots.stock.classList.add('hint');
+    const vezes = k === 1 ? 'no monte' : `${k} vezes no monte`;
+    toast(`Toque ${vezes}: o ${cardName(c)} vai ${where(to)}. Ou toque em Dica de novo.`, 3600);
+    // Segundo toque em Dica: vira o monte sozinho até a carta e já faz a jogada.
+    pendingHint = {
+      until: Date.now() + 5000,
+      run: async () => {
+        busy = true;
+        for (let i = 0; i < k; i++) {
+          busy = false; drawStock(); busy = true;
+          await sleep(Math.max(70, 260 - k * 15));
+        }
+        busy = false;
+        if (S.waste[S.waste.length - 1] === c && canDrop([c], to)) doMove('waste', S.waste.length - 1, to);
+      },
+    };
+  }
+
+  let pendingHint = null, hintBusy = false;
+  async function hint() {
+    if (busy || S.won || hintBusy) return;
+    if (pendingHint && Date.now() < pendingHint.until) {
+      const run = pendingHint.run;
+      pendingHint = null;
+      clearHints();
+      run();
       return;
     }
-    hintTimer = setTimeout(clearHints, 1800);
+    clearHints();
+    void board.offsetWidth; // reinicia a animação se a dica for pedida de novo
+    hintBusy = true;
+    const state = solverState();
+    const key = JSON.stringify(state);
+    const slow = setTimeout(() => toast('Pensando…'), 400);
+    const r = await ask({ type: 'solve', state, draw: S.draw, diff: S.diff, limit: 150000 });
+    clearTimeout(slow);
+    hintBusy = false;
+    if (busy || S.won || JSON.stringify(solverState()) !== key) return; // o jogo mudou enquanto pensava
+
+    if (r && r.solved && r.path.length) {
+      const m = r.path[0];
+      if (m.t === 'tf') showMove('t' + m.from, S.tab[m.from].length - 1, 'f' + foundSlot(m.c));
+      else if (m.t === 'tt') showMove('t' + m.from, m.idx, 't' + m.to);
+      else if (m.t === 'ft') {
+        const f = S.found.findIndex(p => p.length && suitOf(p[0]) === m.su);
+        showMove('f' + f, S.found[f].length - 1, 't' + m.to);
+      } else {
+        const to = m.t === 'wf' ? 'f' + foundSlot(m.c) : 't' + m.to;
+        if (m.k > 0) showTalon(m.k, m.c, to);
+        else showMove('waste', S.waste.length - 1, to);
+      }
+    } else if (r && r.exhausted) {
+      toast('Daqui não dá mais para ganhar. Desfaça algumas jogadas.', 3600);
+      btn.undo.classList.add('nudge');
+      setTimeout(() => btn.undo.classList.remove('nudge'), 2400);
+    } else {
+      heuristicHint();
+    }
+    hintTimer = setTimeout(clearHints, 3200);
+  }
+
+  // Reserva quando o solucionador não conclui a tempo.
+  function heuristicHint() {
+    const m = findMoves()[0];
+    if (m) return showMove(m.ref, m.index, m.to);
+    for (const p of reachable()) {
+      if (!p.k || !playable(p.top)) continue;
+      let to = null;
+      for (let f = 0; f < 4 && !to; f++) if (canFound(p.top, f)) to = 'f' + f;
+      for (let t = 0; t < 7 && !to; t++) if (canTab(p.top, t)) to = 't' + t;
+      return showTalon(p.k, p.top, to);
+    }
+    toast('Sem jogadas possíveis. Desfaça algumas jogadas ou comece outro jogo.', 3600);
   }
   let hintTimer = 0;
   function clearHints() {
@@ -332,7 +509,7 @@
     const left = Math.round((bw - totalW) / 2);
     const colX = [...Array(7)].map((_, i) => left + i * (cw + gap));
     const topY = Math.round(gap * 0.8);
-    M = { bw, bh, cw, ch, gap, colX, topY, tabY: topY + ch + Math.round(gap * 1.8), fanDx: Math.round(cw * 0.3) };
+    M = { bw, bh, cw, ch, gap, colX, topY, tabY: topY + ch + Math.round(gap * 1.8), fanDx: Math.floor((cw + gap) / 2) - 1 };
     board.style.setProperty('--cw', cw + 'px');
     board.style.setProperty('--ch', ch + 'px');
     document.documentElement.style.setProperty('--cw', cw + 'px');
@@ -399,7 +576,12 @@
         el.style.zIndex = p.z;
       }
     }
-    slots.stock.classList.toggle('empty-all', !S.stock.length && !S.waste.length);
+    const mp = maxPasses();
+    const left = mp ? Math.max(0, mp - 1 - (S.passes || 0)) : -1;
+    slots.stock.classList.toggle('empty-all', !S.stock.length && (!S.waste.length || left === 0));
+    passBadge.hidden = left < 0;
+    passBadge.textContent = left === 0 ? 'última' : `${left} ${left === 1 ? 'volta' : 'voltas'}`;
+    passBadge.style.transform = `translate3d(${M.colX[0] + M.cw / 2}px,${M.topY + M.ch - 9}px,0) translateX(-50%)`;
     updateHud();
   }
 
@@ -409,7 +591,7 @@
     hud.time.textContent = fmtTime(S.time);
     btn.undo.disabled = !history.length;
     const allUp = S.tab.every(p => p.every(id => S.up[id]));
-    const canAuto = !S.won && allUp && (S.draw === 1 || !S.stock.length && !S.waste.length);
+    const canAuto = !S.won && allUp && ((S.draw === 1 && !maxPasses()) || !S.stock.length && !S.waste.length);
     btn.auto.hidden = !canAuto;
     btn.hint.hidden = canAuto;
   }
@@ -515,19 +697,26 @@
   board.addEventListener('contextmenu', e => e.preventDefault());
 
   // ---------- Fluxo do jogo ----------
-  function newGame() {
+  async function newGame() {
     if (S && S.counted && !S.won) { stats.streak = 0; saveStats(); }
-    S = freshState();
-    history = [];
     closeModals();
     clearHints();
+    pendingHint = null;
     fx.getContext('2d').clearRect(0, 0, fx.width, fx.height);
-    // Embaralha (som) e recolhe as cartas antes de distribuir.
+    // Embaralha (som) e recolhe as cartas enquanto o jogo vencível fica pronto.
     busy = true;
     sfx.shuffle();
-    gather();
-    setTimeout(deal, 650);
+    if (M) gather();
+    const t0 = Date.now();
+    const slow = setTimeout(() => toast('Embaralhando um jogo que dá para ganhar…', 4000), 900);
+    const deck = await takeDeal();
+    clearTimeout(slow);
+    S = freshState(deck);
+    history = [];
+    stuckWarned = '';
     save();
+    setTimeout(deal, Math.max(0, 650 - (Date.now() - t0)));
+    prefetch();
   }
 
   // Junta todas as cartas no monte, viradas para baixo, com animação.
@@ -601,6 +790,7 @@
           `<div><b>${S.score}</b><span>Pontos</span></div>` +
           (bonus ? `<div class="best">Bônus de tempo: +${bonus}</div>` : '') +
           (newBest ? '<div class="best">Novo recorde de pontos!</div>' : fastest ? '<div class="best">Sua vitória mais rápida!</div>' : '');
+        $('#modal-win .sub').textContent = `${DIFF_NAMES[S.diff] || 'Normal'} · Virar ${S.draw}`;
         openModal('#modal-win');
       });
     }, 350);
@@ -760,12 +950,12 @@
   }
 
   let toastTimer = 0;
-  function toast(msg) {
+  function toast(msg, ms = 2200) {
     const t = $('#toast');
     t.textContent = msg;
     t.classList.add('show');
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => t.classList.remove('show'), 2200);
+    toastTimer = setTimeout(() => t.classList.remove('show'), ms);
   }
 
   // ---------- Som (sintetizado) ----------
@@ -929,10 +1119,32 @@
     });
   });
 
+  let pendingRule = null;
   function askNewGame() {
-    if (busy && !S.won) return;
+    if (!S || (busy && !S.won)) return;
+    pendingRule = null;
+    $('#modal-new p').textContent = 'O jogo atual será abandonado.';
     if (S.started && !S.won) openModal('#modal-new');
     else newGame();
+  }
+
+  // Modo e dificuldade valem na hora: começam um jogo novo (perguntando se já há um em andamento).
+  function changeRule(key, v) {
+    if (!S || settings[key] === v) return;
+    if (busy && !S.won) { setTimeout(() => changeRule(key, v), 150); return; } // espera a distribuição
+    const label = key === 'draw' ? `Virar ${v}` : DIFF_NAMES[v];
+    const go = () => {
+      settings[key] = v;
+      saveSettings();
+      applyLook();
+      newGame();
+      setTimeout(() => toast(`Novo jogo: ${DIFF_NAMES[settings.diff]} · Virar ${settings.draw}`), 700);
+    };
+    if (S.started && !S.won) {
+      pendingRule = go;
+      $('#modal-new p').textContent = `Mudar para ${label} começa um novo jogo. O jogo atual será abandonado.`;
+      openModal('#modal-new');
+    } else go();
   }
 
   function applyLook() {
@@ -940,6 +1152,7 @@
     document.body.dataset.back = settings.back;
     const sel = (box, v) => document.querySelectorAll(`${box} button`).forEach(b => b.classList.toggle('on', b.dataset.v === String(v)));
     sel('#opt-draw', settings.draw);
+    sel('#opt-diff', settings.diff);
     sel('#opt-felt', settings.felt);
     sel('#opt-back', settings.back);
     sel('#opt-sound', settings.sound ? 1 : 0);
@@ -960,14 +1173,11 @@
 
   $('#opt-draw').addEventListener('click', e => {
     const b = e.target.closest('button');
-    if (!b) return;
-    const v = +b.dataset.v;
-    if (v === settings.draw) return;
-    settings.draw = v;
-    saveSettings();
-    applyLook();
-    toast(v === 1 ? 'Virar 1 — vale no próximo jogo' : 'Virar 3 — vale no próximo jogo');
-    if (!S.started) { S.draw = v; S.fan = 0; render(); save(); }
+    if (b) changeRule('draw', +b.dataset.v);
+  });
+  $('#opt-diff').addEventListener('click', e => {
+    const b = e.target.closest('button');
+    if (b) changeRule('diff', b.dataset.v);
   });
   $('#opt-felt').addEventListener('click', e => {
     const b = e.target.closest('button');
@@ -992,7 +1202,11 @@
   });
 
   $('#btn-new').addEventListener('click', askNewGame);
-  $('#confirm-new').addEventListener('click', newGame);
+  $('#confirm-new').addEventListener('click', () => {
+    const go = pendingRule;
+    pendingRule = null;
+    go ? go() : newGame();
+  });
   $('#win-new').addEventListener('click', newGame);
   btn.undo.addEventListener('click', undo);
   btn.hint.addEventListener('click', hint);
@@ -1003,11 +1217,24 @@
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); undo(); return; }
     if (e.target.closest && e.target.closest('input,textarea')) return;
     const k = e.key.toLowerCase();
-    if (k === ' ' || k === 'd') { e.preventDefault(); if (!busy && !S.won) drawStock(); }
+    if (k === ' ' || k === 'd') { e.preventDefault(); if (S && !busy && !S.won) drawStock(); }
     else if (k === 'h') hint();
     else if (k === 'n') askNewGame();
     else if (k === 'u') undo();
     else if (k === 'escape') closeModals();
+  });
+
+  // ---------- Sem zoom e sem seleção do navegador ----------
+  // Pinça, toque duplo, Ctrl+roda e Ctrl+/- não dão zoom; nada fica selecionado ao tocar.
+  const block = e => e.preventDefault();
+  ['gesturestart', 'gesturechange', 'gestureend', 'selectstart', 'dblclick', 'dragstart'].forEach(t =>
+    document.addEventListener(t, block, { passive: false }));
+  document.addEventListener('touchmove', e => {
+    if (e.touches.length > 1 || !e.target.closest('.sheet')) e.preventDefault();
+  }, { passive: false });
+  document.addEventListener('wheel', e => { if (e.ctrlKey) e.preventDefault(); }, { passive: false });
+  document.addEventListener('keydown', e => {
+    if ((e.ctrlKey || e.metaKey) && ['+', '-', '=', '0'].includes(e.key)) e.preventDefault();
   });
 
   // ---------- Relógio ----------
@@ -1038,16 +1265,23 @@
   const saved = store.get('tp_game', null);
   if (saved && saved.S && !saved.S.won && Array.isArray(saved.S.tab)) {
     S = saved.S;
+    if (!S.diff) S.diff = 'normal';
     history = saved.history || [];
     measure();
     board.classList.add('notrans');
     render({ instant: true });
     void board.offsetWidth;
     board.classList.remove('notrans');
+    prefetch();
   } else {
-    S = freshState();
-    deal();
-    save();
+    busy = true;
+    measure();
+    takeDeal().then(deck => {
+      S = freshState(deck);
+      save();
+      deal();
+      prefetch();
+    });
   }
 
   // Redesenha quando as fontes carregarem (métricas de texto mudam).

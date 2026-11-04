@@ -12,9 +12,27 @@ O clássico jogo de cartas **Paciência (Klondike)**, com visual caprichado e fe
 - Toque no monte para virar cartas. Quando ele acabar, toque de novo para reciclar.
 - Quando todas as cartas estiverem viradas, aparece o botão **Finalizar** para completar automaticamente.
 
+## Todo jogo dá para ganhar
+
+Antes de distribuir, cada jogo é resolvido por um solucionador (`js/solver.js`, roda num Web Worker): só entram jogos com solução comprovada. O próximo jogo já fica pronto em segundo plano.
+
+| Dificuldade | Como é |
+|---|---|
+| **Fácil** | Jogos que se resolvem quase sem desvios. Monte sem limite. |
+| **Normal** (padrão) | Qualquer jogo vencível. Monte sem limite. |
+| **Difícil** | Jogos que exigem planejamento e o monte tem só 3 voltas. |
+
+A **Dica** usa o mesmo solucionador: mostra a jogada que leva à vitória (inclusive quantas vezes tocar no monte e qual carta vai sair) e, tocando em Dica de novo, faz a jogada por você. Se você entrar num caminho sem saída, ela avisa para desfazer.
+
+Teste do solucionador (gera jogos e reproduz cada solução com as regras do jogo):
+
+```bash
+node test/solver.test.js
+```
+
 ## Recursos
 
-- Modos **Virar 1** e **Virar 3**
+- Modos **Virar 1** e **Virar 3** e três dificuldades
 - Desfazer ilimitado, dicas, pontuação (estilo Windows) com bônus de tempo
 - 4 cores de mesa e 4 versos de carta
 - Estatísticas: jogos, vitórias, sequência, melhor tempo e recorde

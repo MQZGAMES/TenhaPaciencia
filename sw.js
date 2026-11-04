@@ -1,11 +1,12 @@
 // Service worker: deixa o jogo instalável e jogável offline.
 // Arquivos do jogo: rede primeiro (sempre a versão mais nova), cache como reserva offline.
 // Fontes do Google: cache primeiro.
-const CACHE = 'tenhapaciencia-v2';
+const CACHE = 'tenhapaciencia-v3';
 const CORE = [
   './',
   'index.html',
   'css/style.css',
+  'js/solver.js',
   'js/game.js',
   'manifest.webmanifest',
   'icon.svg',
